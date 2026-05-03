@@ -1,0 +1,15 @@
+name = "bwm-clarity-relay"
+main = "src/index.ts"
+compatibility_date = "2025-03-20"
+account_id = "ba00448499190431e6e4a00820f2200d"
+
+[vars]
+SUPABASE_URL = "https://lscifhwmmkjiobnthlak.supabase.co"
+CLARITY_PROJECT_ID = "w7ga9q22fa"
+BROKER_URL = "https://bwm-cred-broker.robert-ba0.workers.dev"
+
+[triggers]
+crons = ["0 * * * *"]
+
+[observability]
+enabled = true
