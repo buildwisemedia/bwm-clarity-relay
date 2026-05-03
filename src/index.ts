@@ -60,6 +60,24 @@ function err(status: number, code: string, extra: Record<string, unknown> = {}):
   return json({ error: code, ...extra }, status);
 }
 
+// Crockford base32 ULID — matches bwm-cred-broker / bwm-meta-ads pattern for operational_events PK
+const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+function ulid(): string {
+  let ts = Date.now();
+  let timeChars = "";
+  for (let i = 0; i < 10; i++) {
+    timeChars = ULID_ALPHABET[ts & 31] + timeChars;
+    ts = Math.floor(ts / 32);
+  }
+  const rand = new Uint8Array(16);
+  crypto.getRandomValues(rand);
+  let randChars = "";
+  for (let i = 0; i < 16; i++) {
+    randChars += ULID_ALPHABET[rand[i] & 31];
+  }
+  return timeChars + randChars;
+}
+
 /** ISO timestamp truncated to the current hour start: "2026-05-03T14:00:00.000Z" */
 function hourStart(d: Date): string {
   return new Date(
@@ -187,16 +205,16 @@ async function insertOperationalEvent(
   env: Env,
   opts: {
     event_type: string;
-    client_slug?: string;
     payload: Record<string, unknown>;
   },
-): Promise<void> {
+): Promise<{ inserted: boolean; error?: string }> {
   const body = {
+    id: ulid(),
     event_type: opts.event_type,
+    client_id: null,    // NULL = BWM-internal; client_slug lives in payload per bwm-meta-ads pattern
     payload: opts.payload,
     session_id: "bwm-clarity-relay",
     occurred_at: new Date().toISOString(),
-    ...(opts.client_slug ? { client_slug: opts.client_slug } : {}),
   };
 
   const res = await fetch(`${env.SUPABASE_URL}/rest/v1/operational_events`, {
@@ -210,15 +228,14 @@ async function insertOperationalEvent(
     body: JSON.stringify(body),
   });
 
-  if (!res.ok) {
-    const text = await res.text();
-    // 409 = duplicate id, acceptable (idempotent re-run)
-    if (res.status !== 409) {
-      console.error(
-        JSON.stringify({ where: "insertOperationalEvent", status: res.status, body: text.slice(0, 300) }),
-      );
-    }
-  }
+  if (res.status >= 200 && res.status < 300) return { inserted: true };
+  const text = await res.text();
+  // 409 = duplicate key (idempotent re-run) — silent
+  if (res.status === 409 || text.includes("duplicate key value")) return { inserted: false };
+  console.error(
+    JSON.stringify({ where: "insertOperationalEvent", status: res.status, body: text.slice(0, 300) }),
+  );
+  return { inserted: false, error: `${res.status}: ${text.slice(0, 200)}` };
 }
 
 // --- Consecutive-failure tracker (P1 escalation after 6h) -------------------
@@ -296,7 +313,6 @@ async function runRelay(env: Env): Promise<RelayResult> {
     // Emit incident — fail-soft, don't crash the worker
     await insertOperationalEvent(env, {
       event_type: "incident.opened",
-      client_slug: CLIENT_SLUG,
       payload: {
         title: `[${severity}] bwm-clarity-relay: token mint failed`,
         body: isNotConfigured
@@ -304,6 +320,7 @@ async function runRelay(env: Env): Promise<RelayResult> {
           : `Broker mint failed: ${errMsg.slice(0, 300)}`,
         severity,
         source: "bwm-clarity-relay",
+        client_slug: CLIENT_SLUG,
         error: errMsg.slice(0, 500),
         recent_failure_count: recentFailures,
       },
@@ -341,12 +358,12 @@ async function runRelay(env: Env): Promise<RelayResult> {
 
     await insertOperationalEvent(env, {
       event_type: "incident.opened",
-      client_slug: CLIENT_SLUG,
       payload: {
         title: `[${severity}] bwm-clarity-relay: Clarity API fetch failed`,
         body: `Clarity Data Export API returned an error: ${errMsg.slice(0, 300)}`,
         severity,
         source: "bwm-clarity-relay",
+        client_slug: CLIENT_SLUG,
         error: errMsg.slice(0, 500),
         recent_failure_count: recentFailures,
       },
@@ -413,12 +430,12 @@ async function runRelay(env: Env): Promise<RelayResult> {
 
     await insertOperationalEvent(env, {
       event_type: "incident.opened",
-      client_slug: CLIENT_SLUG,
       payload: {
         title: `[${severity}] bwm-clarity-relay: Supabase upsert failed`,
         body: `Failed to write ${toUpsert.length} rows to clarity_events: ${errMsg.slice(0, 300)}`,
         severity,
         source: "bwm-clarity-relay",
+        client_slug: CLIENT_SLUG,
         error: errMsg.slice(0, 500),
         recent_failure_count: recentFailures,
       },
@@ -439,9 +456,9 @@ async function runRelay(env: Env): Promise<RelayResult> {
   // 5. Emit heartbeat
   await insertOperationalEvent(env, {
     event_type: "daemon.heartbeat",
-    client_slug: CLIENT_SLUG,
     payload: {
       source: "bwm-clarity-relay",
+      client_slug: CLIENT_SLUG,
       clarity_rows_total: clarityRows.length,
       tracked_pages: TRACKED_PAGES,
       tracked_rows: toUpsert.length,
