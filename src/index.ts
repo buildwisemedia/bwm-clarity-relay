@@ -33,6 +33,15 @@ export interface Env {
 const BWM_HOSTNAME = "buildwisemedia.com";
 const CLIENT_SLUG = "buildwise-media";
 
+// Mirrors REQUIRED_PAYLOAD_KEYS in ~/bwm-ops-events/log-event/log_event.py.
+// Worker writes go direct to /rest/v1/operational_events, bypassing the
+// Python CLI's validate(). Enforced at insertOperationalEvent() — call sites
+// supply explicit scope/symptom; the helper backstops with a synthesized
+// fallback + console.error so regressions surface in wrangler tail.
+const REQUIRED_PAYLOAD_KEYS: Record<string, readonly string[]> = {
+  "incident.opened": ["severity", "scope", "symptom"],
+};
+
 // --- Clarity API types (metric-pivoted shape) ---------------------------------
 
 interface ClarityInfoRow {
@@ -389,6 +398,31 @@ async function insertOperationalEvent(
     payload: Record<string, unknown>;
   },
 ): Promise<{ inserted: boolean; error?: string }> {
+  // Schema backstop — see REQUIRED_PAYLOAD_KEYS above. Call sites should
+  // supply explicit scope/symptom for incident.opened; this catches future
+  // regressions and synthesizes valid placeholders so the event still records.
+  const required = REQUIRED_PAYLOAD_KEYS[opts.event_type];
+  if (required) {
+    const missing = required.filter(
+      (k) => opts.payload[k] === undefined || opts.payload[k] === null || opts.payload[k] === "",
+    );
+    if (missing.length > 0) {
+      console.error(
+        JSON.stringify({
+          where: "insertOperationalEvent.schemaBackstop",
+          event_type: opts.event_type,
+          missing,
+          payload_keys: Object.keys(opts.payload),
+        }),
+      );
+      if (opts.event_type === "incident.opened") {
+        opts.payload.scope ??= `clarity-relay:${opts.payload.source ?? "unknown"}:unscoped`;
+        opts.payload.symptom ??= "schema-bypass-fallback";
+        opts.payload.severity ??= "P3";
+      }
+    }
+  }
+
   const body = {
     id: ulid(),
     event_type: opts.event_type,
@@ -491,7 +525,8 @@ async function runRelay(env: Env): Promise<RelayResult> {
       }),
     );
 
-    // Emit incident — fail-soft, don't crash the worker
+    // Emit incident — fail-soft, don't crash the worker.
+    // scope/symptom required per log_event.py REQUIRED_PAYLOAD_KEYS.
     await insertOperationalEvent(env, {
       event_type: "incident.opened",
       payload: {
@@ -500,6 +535,8 @@ async function runRelay(env: Env): Promise<RelayResult> {
           ? "CLARITY_API_TOKEN_BWM not yet configured in cred-broker. Push token via: echo \"$TOKEN\" | npx wrangler secret put VAULT_CLARITY_API_TOKEN_BWM --name bwm-cred-broker"
           : `Broker mint failed: ${errMsg.slice(0, 300)}`,
         severity,
+        scope: `clarity-relay:token-mint:${CLIENT_SLUG}`,
+        symptom: isNotConfigured ? "broker-token-missing" : "broker-mint-error",
         source: "bwm-clarity-relay",
         client_slug: CLIENT_SLUG,
         error: errMsg.slice(0, 500),
@@ -537,12 +574,20 @@ async function runRelay(env: Env): Promise<RelayResult> {
       }),
     );
 
+    // scope/symptom required per log_event.py REQUIRED_PAYLOAD_KEYS.
+    // symptom dedups on rate-limit-vs-other for incident-trend dashboards.
     await insertOperationalEvent(env, {
       event_type: "incident.opened",
       payload: {
         title: `[${severity}] bwm-clarity-relay: Clarity API fetch failed`,
         body: `Clarity Data Export API returned an error: ${errMsg.slice(0, 300)}`,
         severity,
+        scope: `clarity-relay:clarity-fetch:${CLIENT_SLUG}`,
+        symptom: errMsg.includes("429")
+          ? "clarity-rate-limit"
+          : errMsg.includes("403")
+            ? "clarity-permission-denied"
+            : "clarity-api-error",
         source: "bwm-clarity-relay",
         client_slug: CLIENT_SLUG,
         error: errMsg.slice(0, 500),
@@ -590,12 +635,15 @@ async function runRelay(env: Env): Promise<RelayResult> {
       }),
     );
 
+    // scope/symptom required per log_event.py REQUIRED_PAYLOAD_KEYS.
     await insertOperationalEvent(env, {
       event_type: "incident.opened",
       payload: {
         title: `[${severity}] bwm-clarity-relay: Supabase upsert failed`,
         body: `Failed to write ${toUpsert.length} rows to clarity_events: ${errMsg.slice(0, 300)}`,
         severity,
+        scope: `clarity-relay:supabase-upsert:${CLIENT_SLUG}`,
+        symptom: "supabase-upsert-error",
         source: "bwm-clarity-relay",
         client_slug: CLIENT_SLUG,
         error: errMsg.slice(0, 500),

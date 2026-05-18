@@ -6,10 +6,24 @@ account_id = "ba00448499190431e6e4a00820f2200d"
 [vars]
 SUPABASE_URL = "https://lscifhwmmkjiobnthlak.supabase.co"
 CLARITY_PROJECT_ID = "w7ga9q22fa"
+# BROKER_URL kept for legacy/reference but not used at runtime.
+# Mint calls go via service binding env.BROKER (see [[services]] below).
 BROKER_URL = "https://bwm-cred-broker.robert-ba0.workers.dev"
 
+# Service binding — required for same-account Worker→Worker mint calls.
+# Direct fetch to https://bwm-cred-broker.robert-ba0.workers.dev returns CF
+# error 1042. See ~/.claude/.../memory/feedback_cf_worker_subrequest_1042.md.
+[[services]]
+binding = "BROKER"
+service = "bwm-cred-broker"
+
 [triggers]
-crons = ["0 * * * *"]
+# Every 3 hours = 8 calls/day, under Clarity's documented "10 API calls per
+# project per day" cap (verified at clarity.microsoft.com 2026-05-03 during
+# Data Export token generation). Each call still pulls numOfDays=1, so
+# coverage is contiguous and idempotent via clarity_events unique index on
+# (client_slug, page_url, metric_window_start).
+crons = ["0 */3 * * *"]
 
 [observability]
 enabled = true
