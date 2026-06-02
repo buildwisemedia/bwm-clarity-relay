@@ -17,13 +17,12 @@ BROKER_URL = "https://bwm-cred-broker.robert-ba0.workers.dev"
 binding = "BROKER"
 service = "bwm-cred-broker"
 
-[triggers]
-# Every 3 hours = 8 calls/day, under Clarity's documented "10 API calls per
-# project per day" cap (verified at clarity.microsoft.com 2026-05-03 during
-# Data Export token generation). Each call still pulls numOfDays=1, so
-# coverage is contiguous and idempotent via clarity_events unique index on
-# (client_slug, page_url, metric_window_start).
-crons = ["0 */3 * * *"]
+# [triggers] cron RETIRED 2026-06-02 — bwm-analytics-relay is the successor and
+# already covers buildwise-media Clarity. Two schedulers against the same Clarity
+# project (w7ga9q22fa) double-counted to ~16 calls/day vs the 10/day cap -> daily
+# 429 "Exceeded daily limit". This worker stays deployed (manual POST /run-now still
+# works) but no longer self-schedules. Re-enable a cron only if analytics-relay
+# stops covering BWM Clarity.
 
 [observability]
 enabled = true
