@@ -28,6 +28,17 @@ export interface Env {
   BROKER_BEARER: string;
   CLARITY_PROJECT_ID: string;
   BWM_INTERNAL_KEY: string;
+  BWM_INTERNAL_KEY_NEXT?: string;
+}
+
+export function isInternalKeyAuthorized(
+  supplied: string,
+  env: Pick<Env, "BWM_INTERNAL_KEY" | "BWM_INTERNAL_KEY_NEXT">,
+): boolean {
+  return Boolean(env.BWM_INTERNAL_KEY) && (
+    supplied === env.BWM_INTERNAL_KEY ||
+    (Boolean(env.BWM_INTERNAL_KEY_NEXT) && supplied === env.BWM_INTERNAL_KEY_NEXT)
+  );
 }
 
 const BWM_HOSTNAME = "buildwisemedia.com";
@@ -729,7 +740,7 @@ export default {
     // POST /run-now — gated on X-BWM-Internal-Key
     if (request.method === "POST" && path === "/run-now") {
       const key = request.headers.get("X-BWM-Internal-Key") ?? "";
-      if (!env.BWM_INTERNAL_KEY || key !== env.BWM_INTERNAL_KEY) {
+      if (!isInternalKeyAuthorized(key, env)) {
         return err(401, "unauthorized");
       }
 
